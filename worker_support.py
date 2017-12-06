@@ -41,7 +41,8 @@ import model as modellib
 ROOT_DIR = os.getcwd()
 
 # Path to trained weights file
-COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_worker_support.h5")
+COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
+WORKER_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_worker_support.h5")
 
 # Directory to save logs and model checkpoints, if not provided
 # through the command line argument --logs
@@ -67,15 +68,15 @@ class WorkerSupportConfig(Config):
     # GPU_COUNT = 8
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 80  # COCO has 80 classes
+    NUM_CLASSES = 1 + 3  # COCO has 80 classes
 
 ############################################################
 #  Dataset
 ############################################################
 
-class CocoDataset(utils.Dataset):
+class WorkerSupportDataset(utils.Dataset):
     def load_worker_support(self, dataset_dir, subset, class_ids=None,
-                  class_map=None):
+                            class_map=None):
         """Load a subset of the worker_support dataset.
         dataset_dir: The root directory of the worker_support dataset.
         subset: What to load (train, val, minival, val35k)
@@ -89,12 +90,11 @@ class CocoDataset(utils.Dataset):
         self.add_class("worker_support", 3, "person")
         # Path
         image_dir = os.path.join(dataset_dir, "train/images" if subset == "train"
-                                 else "test/images")
+                                else "test/images")
         json_dir = os.path.join(dataset_dir, "train/labels" if subset == "train"
-                                 else "test/labels")
+                                else "test/labels")
         imagesList = os.listdir(image_dir)
-        imageNum = len(imagesList)
-        for i in range(imageNum):
+        for i in range(len(imagesList)):
             # TODO: add width and height
             self.add_image(
                 "worker_support", image_id=i,
@@ -134,6 +134,135 @@ class CocoDataset(utils.Dataset):
             mask[:, :, i:i+1] = np.array(img)
             class_ids[i:i+1] = self.class_names.index(class_name)
         return mask, class_ids
-            
-        
-        
+
+
+############################################################
+#  COCO Evaluation
+############################################################
+
+
+
+
+############################################################
+#  Training
+############################################################
+
+
+if __name__ == '__main__':
+    import argparse
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Train Mask R-CNN on WorkerSupport Dataset.')
+    parser.add_argument("command",
+                        metavar="<command>",
+                        help="'train' or 'evaluate' on WorkerSupport Dataset")
+    parser.add_argument('--dataset', required=True,
+                        metavar="/path/to/worker_support/",
+                        help='Directory of the WorkerSupport dataset')
+    parser.add_argument('--model', required=True,
+                        metavar="/path/to/weights.h5",
+                        help="Path to weights .h5 file or 'worker_support'")
+    parser.add_argument('--logs', required=False,
+                        default=DEFAULT_LOGS_DIR,
+                        metavar="/path/to/logs/",
+                        help='Logs and checkpoints directory (default=logs/)')
+    parser.add_argument('--limit', required=False,
+                        default=500,
+                        metavar="<image count>",
+                        help='Images to use for evaluation (defaults=500)')
+    args = parser.parse_args()
+    print("Command: ", args.command)
+    print("Model: ", args.model)
+    print("Dataset: ", args.dataset)
+    print("Logs: ", args.logs)
+
+    # Configurations
+    if args.command == "train":
+        config = WorkerSupportConfig()
+    else:
+        class InferenceConfig(WorkerSupportConfig):
+            # Set batch size to 1 since we'll be running inference on
+            # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 1
+            DETECTION_MIN_CONFIDENCE = 0
+        config = InferenceConfig()
+    config.display()
+
+    # Create model
+    if args.command == "train":
+        model = modellib.MaskRCNN(mode="training", config=config,
+                                  model_dir=args.logs)
+    else:
+        model = modellib.MaskRCNN(mode="inference", config=config,
+                                  model_dir=args.logs)
+
+    # Select weights file to load
+    if args.model.lower() == "coco":
+        model_path = COCO_MODEL_PATH
+    elif args.model.lower() == "worker_support":
+        # Find last trained weights
+        model_path = WORKER_MODEL_PATH
+    elif args.model.lower() == "last":
+        # Find last trained weights
+        model_path = model.find_last()[1]
+    elif args.model.lower() == "imagenet":
+        # Start from ImageNet trained weights
+        model_path = model.get_imagenet_weights()
+    else:
+        model_path = args.model
+
+    # Load weights
+    print("Loading weights ", model_path)
+    model.load_weights(model_path, by_name=True)
+
+    # Train or evaluate
+    if args.command == "train":
+        # Training dataset. Use the training set and 35K from the
+        # validation set, as as in the Mask RCNN paper.
+        dataset_train = WorkerSupportDataset()
+        dataset_train.load_worker_support(args.dataset, "train")
+        dataset_train.prepare()
+
+        # Validation dataset
+        dataset_val = WorkerSupportDataset()
+        dataset_val.load_worker_support(args.dataset, "test")
+        dataset_val.prepare()
+
+        # *** This training schedule is an example. Update to your needs ***
+
+        # Training - Stage 1
+        print("Training network heads")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=40,
+                    layers='heads')
+
+        # Training - Stage 2
+        # Finetune layers from ResNet stage 4 and up
+        print("Fine tune Resnet stage 4 and up")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=120,
+                    layers='4+')
+
+        # Training - Stage 3
+        # Fine tune all layers
+        print("Fine tune all layers")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE / 10,
+                    epochs=160,
+                    layers='all')
+
+    elif args.command == "evaluate":
+        pass
+        # Validation dataset
+        # dataset_val = CocoDataset()
+        # coco = dataset_val.load_coco(args.dataset, "minival", return_coco=True)
+        # dataset_val.prepare()
+        # print("Running COCO evaluation on {} images.".format(args.limit))
+        # evaluate_coco(model, dataset_val, coco, "bbox", limit=int(args.limit))
+    else:
+        print("'{}' is not recognized. "
+              "Use 'train' or 'evaluate'".format(args.command))
