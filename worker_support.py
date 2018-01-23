@@ -95,12 +95,13 @@ class WorkerSupportDataset(utils.Dataset):
                                 else "test/labels")
         imagesList = os.listdir(image_dir)
         for i in range(len(imagesList)):
-            # TODO: add width and height
+            im = Image.open(os.path.join(image_dir, imagesList[i]))
+            width, height = im.size
             self.add_image(
                 "worker_support", image_id=i,
                 path=os.path.join(image_dir, imagesList[i]),
-                json_path=os.path.join(json_dir, imagesList[i][:-4]+'.json'),
-                width=100, height=100
+                json_path=os.path.join(json_dir, imagesList[i][:-4]+'__labels.json'),
+                width=width, height=height
             )
 
     def image_reference(self, image_id):
@@ -198,7 +199,7 @@ if __name__ == '__main__':
         model = modellib.MaskRCNN(mode="inference", config=config,
                                   model_dir=args.logs)
 
-    # Select weights file to load
+    # Select weights file to save/load
     if args.model.lower() == "coco":
         model_path = COCO_MODEL_PATH
     elif args.model.lower() == "worker_support":
@@ -213,9 +214,21 @@ if __name__ == '__main__':
     else:
         model_path = args.model
 
-    # Load weights
-    print("Loading weights ", model_path)
-    model.load_weights(model_path, by_name=True)
+    # Which weights to start with?
+    init_with = "coco"  # imagenet, coco, or last
+
+    if init_with == "imagenet":
+        model.load_weights(model.get_imagenet_weights(), by_name=True)
+    elif init_with == "coco":
+        # Load weights trained on MS COCO, but skip layers that
+        # are different due to the different number of classes
+        # See README for instructions to download the COCO weights
+        model.load_weights(COCO_MODEL_PATH, by_name=True,
+                        exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", 
+                                    "mrcnn_bbox", "mrcnn_mask"])
+    elif init_with == "last":
+        # Load the last model you trained and continue training
+        model.load_weights(model.find_last()[1], by_name=True)
 
     # Train or evaluate
     if args.command == "train":
@@ -254,9 +267,15 @@ if __name__ == '__main__':
                     learning_rate=config.LEARNING_RATE / 10,
                     epochs=160,
                     layers='all')
+        
+        print("Saving weights ", model_path)
+        model.keras_model.save_weights(model_path)
 
     elif args.command == "evaluate":
         pass
+        # Load weights
+        print("Loading weights ", model_path)
+        model.load_weights(model_path, by_name=True)
         # Validation dataset
         # dataset_val = CocoDataset()
         # coco = dataset_val.load_coco(args.dataset, "minival", return_coco=True)
