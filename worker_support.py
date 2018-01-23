@@ -119,21 +119,33 @@ class WorkerSupportDataset(utils.Dataset):
         json_path = info['json_path']
         with open(json_path, 'r') as f:
             content = js.load(f)
-        count = len(content['labels'])
+        
         nx, ny = info['width'], info['height']
-        mask = np.zeros([nx, ny, count], dtype=np.uint8)
-        class_ids = np.zeros([count], dtype=np.int32)
+
+        ploys = []
+        class_names = []
         for i, (annotation) in enumerate(content['labels']):
             # label class
             class_name = annotation['label_class']
             vertices = annotation['vertices']
+            if len(vertices) < 4:
+                continue
+            if class_name is None:
+                continue
             poly = []
             for vertice in vertices:
                 poly.append((float(vertice['x']), float(vertice['y'])))
+            ploys.append(poly)
+            class_names.append(class_name)
+
+        count = len(ploys)
+        mask = np.zeros([ny, nx, count], dtype=np.uint8)
+        class_ids = np.zeros([count], dtype=np.int32)
+        for i in range(len(ploys)):
             img = Image.new("L", [nx, ny], 0)
-            ImageDraw.Draw(img).polygon(poly, outline=1, fill=1)
-            mask[:, :, i:i+1] = np.array(img)
-            class_ids[i:i+1] = self.class_names.index(class_name)
+            ImageDraw.Draw(img).polygon(ploys[i], outline=1, fill=1)
+            mask[:, :, i] = np.array(img)
+            class_ids[i] = self.class_names.index(class_names[i])
         return mask, class_ids
 
 
@@ -158,12 +170,14 @@ if __name__ == '__main__':
     parser.add_argument("command",
                         metavar="<command>",
                         help="'train' or 'evaluate' on WorkerSupport Dataset")
-    parser.add_argument('--dataset', required=True,
+    parser.add_argument('--dataset', required=False,
                         metavar="/path/to/worker_support/",
-                        help='Directory of the WorkerSupport dataset')
-    parser.add_argument('--model', required=True,
+                        help='Directory of the WorkerSupport dataset',
+                        default='datasets')
+    parser.add_argument('--model', required=False,
                         metavar="/path/to/weights.h5",
-                        help="Path to weights .h5 file or 'worker_support'")
+                        help="Path to weights .h5 file or 'worker_support'",
+                        default='worker_support')
     parser.add_argument('--logs', required=False,
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
